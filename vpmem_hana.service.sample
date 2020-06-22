@@ -1,0 +1,12 @@
+[Unit]
+Description=Virtual PMEM SAP HANA Startup Script
+# NOTE: Ensure path to script is mounted. 
+RequiresMountsFor=/usr/sap
+
+[Service]
+Type=oneshot
+# NOTE: Adjust the path to the startup script.
+ExecStart=/bin/sh -c "/usr/sap/vpmem/vpmem_hana_startup.sh -c /usr/sap/vpmem/vpmem_hana.cfg -l /usr/sap/vpmem/vpmem_hana_startup.log"
+
+[Install]
+WantedBy=multi-user.target
