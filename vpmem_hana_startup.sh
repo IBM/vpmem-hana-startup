@@ -60,6 +60,7 @@ Usage: $NAME [-c <file>] [-l <file>] [-p] [-h]
  -c <file>     Full path configuration file
  -l <file>     Full path log file
  -p            List volume parent UUIDs
+ -v            Print version
  -h            Help
 EOUSAGE
 }
@@ -199,8 +200,8 @@ function update_hana_cfg() {
 }
 
 # Main #################################################
-NAME=$(basename $0|sed 's/\(\..*\)$//')
-VERSION="1.0"
+NAME=$(basename $0)
+VERSION="1.1"
 DISTRO=$(grep PRETTY_NAME /etc/os-release | sed 's/PRETTY_NAME=//g' | tr -d '="')
 
 # Defaults
@@ -211,7 +212,7 @@ declare -a regions
 declare -a nid_list='()'
 declare vpmem_fs_list=""
 
-while getopts ":hc:l:p" opt; do
+while getopts ":hc:l:pv" opt; do
     case $opt in
         c) 
           CONFIG_VPMEM=$OPTARG
@@ -220,6 +221,7 @@ while getopts ":hc:l:p" opt; do
           LOGFILE=$OPTARG
           ;;
         p) list_puuids ; exit 0;;
+        v) echo "$NAME: version $VERSION" ; exit 0;;
         h) usage "Help" ; exit 0;;
         :) usage "Option -${OPTARG} requires an argument." ; exit 1 ;;
         \?) usage "Invalid option -${OPTARG}" ; exit 1;;
