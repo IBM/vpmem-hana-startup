@@ -195,13 +195,24 @@ function update_hana_cfg() {
     local -r sid=${1^^}
     local -r config_file="/usr/sap/$sid/SYS/global/hdb/custom/config/global.ini"
     local -r param="basepath_persistent_memory_volumes"
-    runCommandExitOnError 'sed -i "s#^${param}.*\$#${param}=${vpmem_fs_list}#g" $config_file'
-    log "HANA configuration file $config_file updated"
+    if [[ ! -f $config_file ]]; then
+        logError "$config_file does not exist"
+        exit 1;
+    fi
+    grep $param $config_file > /dev/null 2>&1 
+    local -r rc=$?
+    if [[ $rc != 0 ]]; then
+        logError "$config_file does not contain a 'basepath_persistent_memory_volumes' property."
+        exit 1;
+    else
+        runCommandExitOnError 'sed -i "s#^${param}.*\$#${param}=${vpmem_fs_list}#g" $config_file'
+        log "HANA configuration file $config_file updated"
+    fi
 }
 
 # Main #################################################
 NAME=$(basename $0)
-VERSION="1.1"
+VERSION="1.2"
 DISTRO=$(grep PRETTY_NAME /etc/os-release | sed 's/PRETTY_NAME=//g' | tr -d '="')
 
 # Defaults
