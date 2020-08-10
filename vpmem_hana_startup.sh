@@ -54,11 +54,13 @@
 function usage() {
     cat <<EOUSAGE >&2
 $@
-Usage: $NAME [-c <file>] [-l <file>] [-p] [-h] 
+Usage: $NAME [-c <file>] [-l <file>] [-r] [-p] [-h] 
  OPTIONS
  ============  =========================================
  -c <file>     Full path configuration file
  -l <file>     Full path log file
+ -r            Recreate filesystem. This options forces recreation of the filesystem(s) regardless of whether valid or not.
+ -n            Filesystem numbering by index. Default is by numa node.
  -p            List volume parent UUIDs
  -v            Print version
  -h            Help
@@ -136,7 +138,7 @@ function validate_vpmem_fs() {
     local -r region=$1
     local -ri rno=${region#"region"}
     blkid /dev/pmem$rno > /dev/null
-    if [[ $? -ne 0 ]]; then
+    if [[ $? -ne 0 || $REBUILD_FS == true ]]; then
         log "Create filesystem on /dev/pmem$rno"
         local -r REFLINK=""
         if [[ ${DISTRO,,} == "red"* ]]; then
@@ -161,33 +163,39 @@ function mount_vpmem_fs() {
     local -ri rno=${region#"region"}
     local -r basemnt=$2
     local -r user=${3,,}adm
-    local -r numa_node=$(cat /sys/devices/ndbus$rno/region$rno/numa_node)
+    local mntpoint
 
-    local -r mnt_numa=${basemnt}/node${numa_node}
-    /usr/bin/mountpoint -q $mnt_numa
-    if [[ $? == 0 ]]; then
-        if [[ -z ${nid_list[$numa_node]} ]]; then
-            declare -i nid_list[$numa_node]=1
-        fi
-        while true;
-        do
-            mnt_numa=${basemnt}/node${numa_node}.${nid_list[$numa_node]}
-            /usr/bin/mountpoint -q $mnt_numa
-            if [[ $? == 0 ]]; then
-                nid_list[$numa_node]+=1
-            else
-                break
+    if [[ $FS_SIMPLE_NUMBERING == true ]]; then
+        mntpoint=${basemnt}/vol${mntindex}
+        ((mntindex++))
+    else
+        local -r numa_node=$(cat /sys/devices/ndbus$rno/region$rno/numa_node)
+        mntpoint=${basemnt}/node${numa_node}
+        /usr/bin/mountpoint -q $mntpoint
+        if [[ $? == 0 ]]; then
+            if [[ -z ${nid_list[$numa_node]} ]]; then
+                declare -i nid_list[$numa_node]=1
             fi
-        done
+            while true;
+            do
+                mntpoint=${basemnt}/node${numa_node}.${nid_list[$numa_node]}
+                /usr/bin/mountpoint -q $mntpoint
+                if [[ $? == 0 ]]; then
+                    nid_list[$numa_node]+=1
+                else
+                    break
+                fi
+            done
+        fi
     fi
 
-    log "Mount /dev/pmem$rno on $mnt_numa"
-    runCommandExitOnError /usr/bin/mkdir -p $mnt_numa
-    runCommandExitOnError /usr/bin/mount -o dax /dev/pmem$rno $mnt_numa
-    runCommandExitOnError /usr/bin/chown $user $mnt_numa
-    runCommandExitOnError /usr/bin/chmod 700 $mnt_numa
+    log "Mount /dev/pmem$rno on $mntpoint"
+    runCommandExitOnError /usr/bin/mkdir -p $mntpoint
+    runCommandExitOnError /usr/bin/mount -o dax /dev/pmem$rno $mntpoint
+    runCommandExitOnError /usr/bin/chown $user $mntpoint
+    runCommandExitOnError /usr/bin/chmod 700 $mntpoint
     [[ ! -z "$vpmem_fs_list" ]] && vpmem_fs_list+=";"
-    vpmem_fs_list+=$mnt_numa
+    vpmem_fs_list+=$mntpoint
 }
 
 function update_hana_cfg() {
@@ -212,24 +220,33 @@ function update_hana_cfg() {
 
 # Main #################################################
 NAME=$(basename $0)
-VERSION="1.2"
+VERSION="1.3"
 DISTRO=$(grep PRETTY_NAME /etc/os-release | sed 's/PRETTY_NAME=//g' | tr -d '="')
 
 # Defaults
 declare LOGFILE="/tmp/${NAME}.log"
 declare CONFIG_VPMEM=""
+declare REBUILD_FS=false
+declare FS_SIMPLE_NUMBERING=false
+declare mntindex=0
 
 declare -a regions
 declare -a nid_list='()'
 declare vpmem_fs_list=""
 
-while getopts ":hc:l:pv" opt; do
+while getopts ":hc:l:prnv" opt; do
     case $opt in
         c) 
           CONFIG_VPMEM=$OPTARG
           ;;
         l) 
           LOGFILE=$OPTARG
+          ;;
+        r) 
+          REBUILD_FS=true
+          ;;
+        n) 
+          FS_SIMPLE_NUMBERING=true
           ;;
         p) list_puuids ; exit 0;;
         v) echo "$NAME: version $VERSION" ; exit 0;;

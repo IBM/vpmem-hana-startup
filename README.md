@@ -2,11 +2,13 @@
 
 ## Usage
 ```
-vpmem_hana_startup.sh [-c <file>] [-l <file>] [-p] [-h]
+vpmem_hana_startup.sh [-c <file>] [-l <file>] [-r] [-p] [-h]
  OPTIONS
  ============  =========================================
  -c <file>     Full path configuration file
  -l <file>     Full path log file
+ -r            Recreate filesystem. This options forces recreation of the filesystem(s) regardless of whether valid or not.
+ -n            Filesystem numbering by index. Default is by numa node.
  -p            List volume parent UUIDs
  -h            Help
 ```
