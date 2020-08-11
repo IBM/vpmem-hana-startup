@@ -1,7 +1,8 @@
 [Unit]
 Description=Virtual PMEM SAP HANA Startup Script
-# NOTE: Ensure path to script is mounted. 
-RequiresMountsFor=/usr/sap
+After=local-fs.target
+After=network.target
+After=remote-fs.target
 
 [Service]
 Type=oneshot
