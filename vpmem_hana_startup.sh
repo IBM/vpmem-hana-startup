@@ -15,6 +15,7 @@
 #  - Updates the HANA configuration file to reflect where the vPMEM devices are mounted for each NUMA domain. 
 #
 # Assumptions:
+# - vPMEM usage is already activated in the HANA ini scripts
 # - Default to xfs filesystems -b 64k -s 512
 #
 # Dependencies:
@@ -27,6 +28,8 @@
 #    [
 #      {
 #        "sid"   : "<HANA instance name>"
+#        ,"nr"   : "<HANA instance number>"
+#        ,"host" : "<HANA host>"
 #        ,"puuid": "<parent vpmem volume uuid>"
 #        ,"mnt"  : "<filesystem path to mount vpmem filesystems under>"
 #      }
@@ -201,10 +204,12 @@ function mount_vpmem_fs() {
 function update_hana_cfg() {
     log "vPMEM filesystems: $vpmem_fs_list"
     local -r sid=${1^^}
-    local -r config_file="/usr/sap/$sid/SYS/global/hdb/custom/config/global.ini"
+    local -r instno=$2
+    local -r insthost=$3
+    local -r config_file="/usr/sap/$sid/HDB${instno}/${insthost}/global.ini"
     local -r param="basepath_persistent_memory_volumes"
     if [[ ! -f $config_file ]]; then
-        logError "$config_file does not exist"
+        logError "HANA Host configuration file $config_file does not exist"
         exit 1;
     fi
     grep $param $config_file > /dev/null 2>&1 
@@ -214,13 +219,13 @@ function update_hana_cfg() {
         exit 1;
     else
         runCommandExitOnError 'sed -i "s#^${param}.*\$#${param}=${vpmem_fs_list}#g" $config_file'
-        log "HANA configuration file $config_file updated"
+        log "HANA HOST configuration file $config_file updated"
     fi
 }
 
 # Main #################################################
 NAME=$(basename $0)
-VERSION="1.3"
+VERSION="1.4"
 DISTRO=$(grep PRETTY_NAME /etc/os-release | sed 's/PRETTY_NAME=//g' | tr -d '="')
 
 # Defaults
@@ -268,8 +273,21 @@ verifyJSON $CONFIG_VPMEM
 jq -rc '.[]' $CONFIG_VPMEM | while IFS='' read instance
 do
     sid=$(echo $instance | jq .sid | tr -d '"' )
+    instno=$(echo $instance | jq .nr | tr -d '"' )
+    insthost=$(echo $instance | jq .host | tr -d '"' )
     mnt=$(echo $instance | jq .mnt | tr -d '"')
     puuid=$(echo $instance | jq .puuid | tr -d '"')
+
+    if [[ $insthost == null ]]
+    then
+        if [[ ! -z "$HOSTNAME" ]]
+        then
+            insthost=$HOSTNAME
+        else
+            logError "hostname not specified in script configuration file."
+            exit 1;
+        fi
+    fi
 
     get_regions $puuid
     for element in "${regions[@]}"
@@ -279,7 +297,7 @@ do
         validate_vpmem_fs $element
         mount_vpmem_fs $element $mnt $sid 
     done
-    update_hana_cfg $sid
+    update_hana_cfg $sid $instno $insthost
     unset regions
 done
 
