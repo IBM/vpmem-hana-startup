@@ -32,6 +32,7 @@ vpmem_hana_startup.sh [-c <file>] [-l <file>] [-r] [-p] [-h]
 - Updates the HANA configuration file to reflect where the vPMEM devices are mounted for each NUMA domain.
 
 ## Assumptions:
+- vPMEM usage is already activated in the HANA ini scripts
 - Default to xfs filesystems -b 64k -s 512
 
 ## Dependencies:
@@ -45,6 +46,8 @@ vpmem_hana_startup.sh [-c <file>] [-l <file>] [-r] [-p] [-h]
     [
       {
         "sid"   : "<HANA instance name>"
+        ,"nr"   : "<HANA instance number>"
+        ,"host" : "<HANA host>"
         ,"puuid": "<parent vpmem volume uuid>"
         ,"mnt"  : "<filesystem path to mount vpmem filesystems under>"
       }
