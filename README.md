@@ -7,7 +7,7 @@ vpmem_hana_startup.sh [-c <file>] [-l <file>] [-r] [-p] [-h]
  ============  =========================================
  -c <file>     Full path configuration file
  -l <file>     Full path log file
- -r            Recreate filesystem. This options forces recreation of the filesystem(s) regardless of whether valid or not.
+ -r            Recreate filesystem. This option forces recreation of the filesystem(s) regardless of whether valid or not.
  -n            Filesystem numbering by index. Default is by numa node.
  -p            List volume parent UUIDs
  -h            Help
@@ -19,7 +19,7 @@ vpmem_hana_startup.sh [-c <file>] [-l <file>] [-r] [-p] [-h]
 - Create/update a hana_vpmem.cfg config file with the path to the HANA configuration file, the UUID of the vPMEM volume, and the location where the vPMEM volumes should get mounted.
 - Create/update a hana_vpmem.service systemd unit file to execute the startup script on boot
 
-## Implementation
+## Implementation:
 - Scans a supplied configuration file to determine:
    - the parent UUID of the vPMEM volumes
    - the HANA sid

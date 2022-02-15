@@ -62,7 +62,7 @@ Usage: $NAME [-c <file>] [-l <file>] [-r] [-p] [-h]
  ============  =========================================
  -c <file>     Full path configuration file
  -l <file>     Full path log file
- -r            Recreate filesystem. This options forces recreation of the filesystem(s) regardless of whether valid or not.
+ -r            Recreate filesystem. This option forces recreation of the filesystem(s) regardless of whether valid or not.
  -n            Filesystem numbering by index. Default is by numa node.
  -p            List volume parent UUIDs
  -v            Print version

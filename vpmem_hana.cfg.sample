@@ -1,9 +1,8 @@
 [
 	{
 		"sid": "JE6" 
-		"nr": "06" 
-		"host": "hana01" 
-		"sid": "JE6" 
+		,"nr": "06" 
+		,"host": "hana01" 
 		,"puuid": "71043c70-3d8f-42fa-8d7d-2828c04666f5"
 		,"mnt": "/hana/vpmem"
 	}
