@@ -113,10 +113,21 @@ function runCommandExitOnError() {
 
 # Funcs ################################################
 function list_puuids() {
-    lsprop /sys/devices/ndbus*/region*/of_node/ibm,unit-parent-guid
+    local -r ex_reg=$(lsprop /sys/devices/ndbus*/region*/of_node/ibm,unit-parent-guid | grep -o 'region[0-9]\+')
+    readarray -t regions <<<"$ex_reg"
+    printf "%10s %4s %13s %s\n" "vPMEM " "Numa" "" ""
+    printf "%10s %4s %13s %s\n" "Region " "Node" "Size" "Parent UUID"
+    printf "%10s %4s %13s %s\n" "----------" "----" "-------------" "------------------------------------"
+    for reg in "${regions[@]}"
+    do
+        local puuid=$(tr -d '\0' < /sys/devices/ndbus*/${reg}/of_node/ibm,unit-parent-guid)
+        local size=$(tr -d '\0' < /sys/devices/ndbus*/${reg}/size)
+        local numanode=$(tr -d '\0' < /sys/devices/ndbus*/${reg}/numa_node)
+        printf "%10s %4d %13d %s\n" $reg $numanode $size $puuid
+    done
 }
 
-function get_regions() {
+function get_regions_by_uuid() {
     local -r uuid=$1
     local -r ex_reg=$(lsprop /sys/devices/ndbus*/region*/of_node/ibm,unit-parent-guid  | grep -B 1 $uuid | grep -o 'region[0-9]\+')
     readarray -t regions <<<"$ex_reg"
@@ -225,7 +236,7 @@ function update_hana_cfg() {
 
 # Main #################################################
 NAME=$(basename $0)
-VERSION="1.4"
+VERSION="1.5"
 DISTRO=$(grep PRETTY_NAME /etc/os-release | sed 's/PRETTY_NAME=//g' | tr -d '="')
 
 # Defaults
@@ -289,13 +300,13 @@ do
         fi
     fi
 
-    get_regions $puuid
+    get_regions_by_uuid $puuid
     for element in "${regions[@]}"
     do
         validate_namespace $element
         unmount_vpmem_fs $element
         validate_vpmem_fs $element
-        mount_vpmem_fs $element $mnt $sid 
+        mount_vpmem_fs $element $mnt/$sid $sid 
     done
     update_hana_cfg $sid $instno $insthost
     unset regions
