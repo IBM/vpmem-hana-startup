@@ -89,7 +89,8 @@ verifyDependencies() {
 }
 
 verifyJSON() {
-    if jq -e . >/dev/null 2>&1 <<<"$1"; then
+    cat $1 | jq -e . >/dev/null 2>&1 
+    if [[ $? -ne 0 ]]; then
         logError "$1 is not a valid JSON file"
         exit 2
     fi
@@ -283,23 +284,51 @@ verifyJSON $CONFIG_VPMEM
 
 jq -rc '.[]' $CONFIG_VPMEM | while IFS='' read instance
 do
-    sid=$(echo $instance | jq .sid | tr -d '"' )
-    instno=$(echo $instance | jq .nr | tr -d '"' )
-    insthost=$(echo $instance | jq .host | tr -d '"' )
-    mnt=$(echo $instance | jq .mnt | tr -d '"')
-    puuid=$(echo $instance | jq .puuid | tr -d '"')
+    if echo $instance | jq -e 'has("sid")' > /dev/null; then
+        sid=$(echo $instance | jq .sid | tr -d '"' )
+	log "Parameter: sid=$sid"
+    else
+        logError "SID not specified in script configuration file. Keyword: 'sid'"
+        exit 1;
+    fi
 
-    if [[ $insthost == null ]]
-    then
+    if echo $instance | jq -e 'has("nr")' > /dev/null; then
+        instno=$(echo $instance | jq .nr | tr -d '"' )
+	log "Parameter: instno=$instno"
+    else
+        logError "Instance number not specified in script configuration file. Keyword: 'nr'"
+        exit 1;
+    fi
+
+    if echo $instance | jq -e 'has("mnt")' > /dev/null; then
+        mnt=$(echo $instance | jq .mnt | tr -d '"' )
+	log "Parameter: mnt=$mnt"
+    else
+        logError "vPMEM volume filesystem mountpoint not specified in script configuration file.  Keyword: 'mnt'"
+        exit 1;
+    fi
+
+    if echo $instance | jq -e 'has("puuid")' > /dev/null; then
+        puuid=$(echo $instance | jq .puuid | tr -d '"' )
+	log "Parameter: puuid=$puuid"
+    else
+        logError "Parrent UUID not specified in script configuration file.  Keyword: 'puuid'"
+        exit 1;
+    fi
+
+    if echo $instance | jq -e 'has("hostname")' > /dev/null; then
+        hostname=$(echo $instance | jq .hostname | tr -d '"' )
+    else
         if [[ ! -z "$HOSTNAME" ]]
         then
             insthost=$HOSTNAME
         else
-            logError "hostname not specified in script configuration file."
+            logError "Hostname not specified in script configuration file. Keyword: 'hostname'"
             exit 1;
         fi
     fi
-
+    log "Parameter: insthost=$insthost"
+ 
     get_regions_by_uuid $puuid
     for element in "${regions[@]}"
     do
