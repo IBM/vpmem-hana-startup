@@ -57,12 +57,13 @@
 function usage() {
     cat <<EOUSAGE >&2
 $@
-Usage: $NAME [-c <file>] [-l <file>] [-r] [-p] [-h] 
+Usage: $NAME [-c <file>] [-a] [-l <file>] [-r] [-p] [-h] 
  OPTIONS
  ============  =========================================
  -c <file>     Full path configuration file
  -l <file>     Full path log file
  -r            Recreate filesystem. This option forces recreation of the filesystem(s) regardless of whether valid or not.
+ -a            Activate vpmem usage in HANA ini files. Default updates only mount point locations.
  -n            Filesystem numbering by index. Default is by numa node.
  -p            List volume parent UUIDs
  -v            Print version
@@ -219,19 +220,42 @@ function update_hana_cfg() {
     local -r instno=$2
     local -r insthost=$3
     local -r config_file="/usr/sap/$sid/HDB${instno}/${insthost}/global.ini"
-    local -r param="basepath_persistent_memory_volumes"
+    local -r basepath_param="basepath_persistent_memory_volumes"
     if [[ ! -f $config_file ]]; then
-        logError "HANA Host configuration file $config_file does not exist"
-        exit 1;
+        if [[ $ACTIVATE_USAGE == true ]]; then
+            touch $config_file > /dev/null 2>&1		
+            if [[ $? != 0 ]]; then
+                logError "HANA Host configuration file $config_file cannot be created"
+                exit 1;
+            fi
+	    chown --reference=$(dirname $config_file) $config_file > /dev/null 2>&1		
+        else
+            logError "HANA Host configuration file $config_file does not exist"
+            exit 1;
+        fi
     fi
-    grep $param $config_file > /dev/null 2>&1 
-    local -r rc=$?
-    if [[ $rc != 0 ]]; then
-        logError "$config_file does not contain a 'basepath_persistent_memory_volumes' property."
-        exit 1;
-    else
-        runCommandExitOnError 'sed -i "s#^${param}.*\$#${param}=${vpmem_fs_list}#g" $config_file'
-        log "HANA HOST configuration file $config_file updated"
+    grep $basepath_param $config_file > /dev/null 2>&1 
+    if [[ $? != 0 ]]; then
+        if [[ $ACTIVATE_USAGE == true ]]; then
+            echo "[persistence]" >> $config_file
+	    echo "basepath_persistent_memory_volumes=XXX" >> $config_file
+        else
+            logError "$config_file does not contain a 'basepath_persistent_memory_volumes' property."
+            exit 1;
+	fi
+    fi
+    runCommandExitOnError 'sed -i "s#^${basepath_param}.*\$#${basepath_param}=${vpmem_fs_list}#g" $config_file'
+    log "HANA HOST configuration file $config_file updated: parameter $basepath_param"
+
+    if [[ $ACTIVATE_USAGE == true ]]; then
+        local -r table_param="table_default"
+        grep $table_param $config_file > /dev/null 2>&1 
+        if [[ $? != 0 ]]; then
+            echo "[persistent_memory]" >> $config_file
+	    echo "table_default=XXX" >> $config_file
+        fi
+        runCommandExitOnError 'sed -i "s#^${table_param}.*\$#${table_param}=on#g" $config_file'
+        log "HANA HOST configuration file $config_file updated: parameter $table_param"
     fi
 }
 
@@ -243,6 +267,7 @@ DISTRO=$(grep PRETTY_NAME /etc/os-release | sed 's/PRETTY_NAME=//g' | tr -d '="'
 # Defaults
 declare LOGFILE="/tmp/${NAME}.log"
 declare CONFIG_VPMEM=""
+declare ACTIVATE_USAGE=false
 declare REBUILD_FS=false
 declare FS_SIMPLE_NUMBERING=false
 declare mntindex=0
@@ -251,7 +276,7 @@ declare -a regions
 declare -a nid_list='()'
 declare vpmem_fs_list=""
 
-while getopts ":hc:l:prnv" opt; do
+while getopts ":hac:l:prnv" opt; do
     case $opt in
         c) 
           CONFIG_VPMEM=$OPTARG
@@ -259,23 +284,30 @@ while getopts ":hc:l:prnv" opt; do
         l) 
           LOGFILE=$OPTARG
           ;;
+        a) 
+          ACTIVATE_USAGE=true
+          ;;
         r) 
           REBUILD_FS=true
           ;;
         n) 
           FS_SIMPLE_NUMBERING=true
           ;;
-        p) list_puuids ; exit 0;;
-        v) echo "$NAME: version $VERSION" ; exit 0;;
-        h) usage "Help" ; exit 0;;
-        :) usage "Option -${OPTARG} requires an argument." ; exit 1 ;;
-        \?) usage "Invalid option -${OPTARG}" ; exit 1;;
+        p) list_puuids; exit 0;;
+        v) echo "$NAME: version $VERSION"; exit 0;;
+        h) usage "Help"; exit 0;;
+        :) usage "Option -${OPTARG} requires an argument."; exit 1;;
+        \?) usage "Invalid option -${OPTARG}"; exit 1;;
     esac
 done
 shift $((OPTIND-1))
 
 exec &> >(tee -a "$LOGFILE")
 exec 2>&1
+
+if [[ -z "$CONFIG_VPMEM" ]]; then
+    usage "Option c or p required" ; exit 1;
+fi
 
 log "= Start =========================================="
 verifyPermissions 
@@ -338,6 +370,7 @@ do
         mount_vpmem_fs $element $mnt/$sid $sid 
     done
     update_hana_cfg $sid $instno $insthost
+    unset vpmem_fs_list
     unset regions
 done
 
