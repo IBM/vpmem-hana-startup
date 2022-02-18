@@ -214,48 +214,61 @@ function mount_vpmem_fs() {
     vpmem_fs_list+=$mntpoint
 }
 
+function create_hana_cfg() {
+    local -r cfgfile=$1
+    local -r exit_on_fail=$2
+    if [[ ! -f $cfgfile ]]; then
+        if [[ $ACTIVATE_USAGE == true ]]; then
+            touch $cfgfile > /dev/null 2>&1                
+            if [[ $? != 0 ]]; then
+                logError "HANA Host configuration file $cfgfile cannot be created"
+                exit 1;
+            fi
+            chown --reference=$(dirname $cfgfile) $cfgfile > /dev/null 2>&1                
+        else
+            if [[ $exit_on_fail == true ]]; then
+                logError "HANA Host configuration file $cfgfile does not exist"
+                exit 1;
+            fi
+        fi
+    fi
+}
+
 function update_hana_cfg() {
     log "vPMEM filesystems: $vpmem_fs_list"
     local -r sid=${1^^}
     local -r instno=$2
     local -r insthost=$3
-    local -r config_file="/usr/sap/$sid/HDB${instno}/${insthost}/global.ini"
+
+    local -r host_global_ini_file="/usr/sap/$sid/HDB${instno}/${insthost}/global.ini"
+    create_hana_cfg $host_global_ini_file true
+
+    local -r host_indexserver_ini_file="/usr/sap/$sid/HDB${instno}/${insthost}/indexserver.ini"
+    create_hana_cfg $host_indexserver_ini_file false
+
     local -r basepath_param="basepath_persistent_memory_volumes"
-    if [[ ! -f $config_file ]]; then
+    grep $basepath_param $host_global_ini_file > /dev/null 2>&1 
+    if [[ $? != 0 ]]; then
         if [[ $ACTIVATE_USAGE == true ]]; then
-            touch $config_file > /dev/null 2>&1		
-            if [[ $? != 0 ]]; then
-                logError "HANA Host configuration file $config_file cannot be created"
-                exit 1;
-            fi
-	    chown --reference=$(dirname $config_file) $config_file > /dev/null 2>&1		
+            echo "[persistence]" >> $host_global_ini_file
+            echo "basepath_persistent_memory_volumes=XXX" >> $host_global_ini_file
         else
-            logError "HANA Host configuration file $config_file does not exist"
+            logError "$host_global_ini_file does not contain a 'basepath_persistent_memory_volumes' property."
             exit 1;
         fi
     fi
-    grep $basepath_param $config_file > /dev/null 2>&1 
-    if [[ $? != 0 ]]; then
-        if [[ $ACTIVATE_USAGE == true ]]; then
-            echo "[persistence]" >> $config_file
-	    echo "basepath_persistent_memory_volumes=XXX" >> $config_file
-        else
-            logError "$config_file does not contain a 'basepath_persistent_memory_volumes' property."
-            exit 1;
-	fi
-    fi
-    runCommandExitOnError 'sed -i "s#^${basepath_param}.*\$#${basepath_param}=${vpmem_fs_list}#g" $config_file'
-    log "HANA HOST configuration file $config_file updated: parameter $basepath_param"
+    runCommandExitOnError 'sed -i "s#^${basepath_param}.*\$#${basepath_param}=${vpmem_fs_list}#g" $host_global_ini_file'
+    log "HANA HOST configuration file $host_global_ini_file updated: parameter $basepath_param"
 
     if [[ $ACTIVATE_USAGE == true ]]; then
         local -r table_param="table_default"
-        grep $table_param $config_file > /dev/null 2>&1 
+        grep $table_param $host_indexserver_ini_file > /dev/null 2>&1 
         if [[ $? != 0 ]]; then
-            echo "[persistent_memory]" >> $config_file
-	    echo "table_default=XXX" >> $config_file
+            echo "[persistent_memory]" >> $host_indexserver_ini_file
+            echo "table_default=XXX" >> $host_indexserver_ini_file
         fi
-        runCommandExitOnError 'sed -i "s#^${table_param}.*\$#${table_param}=on#g" $config_file'
-        log "HANA HOST configuration file $config_file updated: parameter $table_param"
+        runCommandExitOnError 'sed -i "s#^${table_param}.*\$#${table_param}=on#g" $host_indexserver_ini_file'
+        log "HANA HOST configuration file $host_indexserver_ini_file updated: parameter $table_param"
     fi
 }
 
@@ -318,7 +331,7 @@ jq -rc '.[]' $CONFIG_VPMEM | while IFS='' read instance
 do
     if echo $instance | jq -e 'has("sid")' > /dev/null; then
         sid=$(echo $instance | jq .sid | tr -d '"' )
-	log "Parameter: sid=$sid"
+        log "Parameter: sid=$sid"
     else
         logError "SID not specified in script configuration file. Keyword: 'sid'"
         exit 1;
@@ -326,7 +339,7 @@ do
 
     if echo $instance | jq -e 'has("nr")' > /dev/null; then
         instno=$(echo $instance | jq .nr | tr -d '"' )
-	log "Parameter: instno=$instno"
+        log "Parameter: instno=$instno"
     else
         logError "Instance number not specified in script configuration file. Keyword: 'nr'"
         exit 1;
@@ -334,7 +347,7 @@ do
 
     if echo $instance | jq -e 'has("mnt")' > /dev/null; then
         mnt=$(echo $instance | jq .mnt | tr -d '"' )
-	log "Parameter: mnt=$mnt"
+        log "Parameter: mnt=$mnt"
     else
         logError "vPMEM volume filesystem mountpoint not specified in script configuration file.  Keyword: 'mnt'"
         exit 1;
@@ -342,7 +355,7 @@ do
 
     if echo $instance | jq -e 'has("puuid")' > /dev/null; then
         puuid=$(echo $instance | jq .puuid | tr -d '"' )
-	log "Parameter: puuid=$puuid"
+        log "Parameter: puuid=$puuid"
     else
         logError "Parrent UUID not specified in script configuration file.  Keyword: 'puuid'"
         exit 1;
