@@ -72,7 +72,7 @@ EOUSAGE
 }
 
 function log() {
-    echo "$(date +%Y%m%d.%H%M%S) [$NAME:$$] $@"
+    echo "$(date +%Y%m%d-%H%M%S) [$NAME:$$] $@"
 }
 
 function logError() {
@@ -132,6 +132,11 @@ function list_puuids() {
 function get_regions_by_uuid() {
     local -r uuid=$1
     local -r ex_reg=$(lsprop /sys/devices/ndbus*/region*/of_node/ibm,unit-parent-guid  | grep -B 1 $uuid | grep -o 'region[0-9]\+')
+
+    if [[ -z "$ex_reg" ]]; then
+        logError "No regions found for $uuid"
+        exit 2
+    fi
     readarray -t regions <<<"$ex_reg"
     log "PMEM regions found: ${regions[@]}"
 }
@@ -160,7 +165,7 @@ function validate_vpmem_fs() {
         if [[ ${DISTRO,,} == "red"* ]]; then
             REFLINK="-m reflink=0"
         fi
-        runCommandExitOnError mkfs.xfs -f -b size=64K -s size=512 $REFLINK /dev/pmem$rno
+        runCommandExitOnError mkfs.xfs -q -f -b size=64K -s size=512 $REFLINK /dev/pmem$rno
     else
         log "Valid filesystem found on /dev/pmem$rno"
     fi
@@ -274,7 +279,7 @@ function update_hana_cfg() {
 
 # Main #################################################
 NAME=$(basename $0)
-VERSION="1.5"
+VERSION="1.6"
 DISTRO=$(grep PRETTY_NAME /etc/os-release | sed 's/PRETTY_NAME=//g' | tr -d '="')
 
 # Defaults
@@ -323,6 +328,7 @@ if [[ -z "$CONFIG_VPMEM" ]]; then
 fi
 
 log "= Start =========================================="
+log "version: $VERSION"
 verifyPermissions 
 verifyDependencies "ndctl" "jq"
 verifyJSON $CONFIG_VPMEM
@@ -354,8 +360,20 @@ do
     fi
 
     if echo $instance | jq -e 'has("puuid")' > /dev/null; then
-        puuid=$(echo $instance | jq .puuid | tr -d '"' )
-        log "Parameter: puuid=$puuid"
+        declare -a puuid
+        puuid=( $(echo $instance | jq '[.puuid] | flatten | values[]' | tr -d '"' ) )
+        for uuid in "${puuid[@]}"
+        do
+            if [[ ${#uuid} -ne 36 ]]; then
+                logError "Invalid UUID specified: $uuid"
+                exit 1;
+            fi
+	    if [[ ! $uuid =~ ^\{?[A-F0-9a-f]{8}-[A-F0-9a-f]{4}-[A-F0-9a-f]{4}-[A-F0-9a-f]{4}-[A-F0-9a-f]{12}\}?$ ]]; then
+                logError "Invalid UUID specified: $uuid"
+                exit 1;
+            fi
+	done
+        log "Parameter: puuid=${puuid[@]}"
     else
         logError "Parrent UUID not specified in script configuration file.  Keyword: 'puuid'"
         exit 1;
@@ -372,15 +390,19 @@ do
             exit 1;
         fi
     fi
-    log "Parameter: insthost=$insthost"
+    log "Parameter: host=$insthost"
  
-    get_regions_by_uuid $puuid
-    for element in "${regions[@]}"
-    do
-        validate_namespace $element
-        unmount_vpmem_fs $element
-        validate_vpmem_fs $element
-        mount_vpmem_fs $element $mnt/$sid $sid 
+    for uuid in "${puuid[@]}"
+    do            
+        log "UUID $uuid"    
+        get_regions_by_uuid $uuid
+        for element in "${regions[@]}"
+        do
+            validate_namespace $element
+            unmount_vpmem_fs $element
+            validate_vpmem_fs $element
+            mount_vpmem_fs $element $mnt/$sid $sid 
+        done
     done
     update_hana_cfg $sid $instno $insthost
     unset vpmem_fs_list
