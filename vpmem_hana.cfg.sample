@@ -1,10 +1,17 @@
 [
 	{
 		"sid": "JE6" 
-		"nr": "06" 
-		"host": "hana01" 
-		"sid": "JE6" 
+		,"nr": "06" 
+		,"host": "hana01" 
 		,"puuid": "71043c70-3d8f-42fa-8d7d-2828c04666f5"
 		,"mnt": "/hana/vpmem"
-	}
+	},
+        {
+                "sid": "LIN"
+                ,"nr": "02"
+                ,"host": "hana01"
+                ,"puuid": ["14fc9d96-02ca-468f-8075-6d9b6fa6f807", "119f6fd1-135d-4cc6-ba53-b3d8aedd0bd7"]
+                ,"mnt": "/hana/vpmem"
+        }
+
 ]

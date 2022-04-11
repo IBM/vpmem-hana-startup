@@ -57,12 +57,13 @@
 function usage() {
     cat <<EOUSAGE >&2
 $@
-Usage: $NAME [-c <file>] [-l <file>] [-r] [-p] [-h] 
+Usage: $NAME [-c <file>] [-a] [-l <file>] [-r] [-p] [-h] 
  OPTIONS
  ============  =========================================
  -c <file>     Full path configuration file
  -l <file>     Full path log file
- -r            Recreate filesystem. This options forces recreation of the filesystem(s) regardless of whether valid or not.
+ -r            Recreate filesystem. This option forces recreation of the filesystem(s) regardless of whether valid or not.
+ -a            Activate vpmem usage in HANA ini files. Default updates only mount point locations.
  -n            Filesystem numbering by index. Default is by numa node.
  -p            List volume parent UUIDs
  -v            Print version
@@ -71,7 +72,7 @@ EOUSAGE
 }
 
 function log() {
-    echo "$(date +%Y%m%d.%H%M%S) [$NAME:$$] $@"
+    echo "$(date +%Y%m%d-%H%M%S) [$NAME:$$] $@"
 }
 
 function logError() {
@@ -89,7 +90,8 @@ verifyDependencies() {
 }
 
 verifyJSON() {
-    if jq -e . >/dev/null 2>&1 <<<"$1"; then
+    cat $1 | jq -e . >/dev/null 2>&1 
+    if [[ $? -ne 0 ]]; then
         logError "$1 is not a valid JSON file"
         exit 2
     fi
@@ -113,12 +115,28 @@ function runCommandExitOnError() {
 
 # Funcs ################################################
 function list_puuids() {
-    lsprop /sys/devices/ndbus*/region*/of_node/ibm,unit-parent-guid
+    local -r ex_reg=$(lsprop /sys/devices/ndbus*/region*/of_node/ibm,unit-parent-guid | grep -o 'region[0-9]\+')
+    readarray -t regions <<<"$ex_reg"
+    printf "%10s %4s %13s %s\n" "vPMEM " "Numa" "" ""
+    printf "%10s %4s %13s %s\n" "Region " "Node" "Size" "Parent UUID"
+    printf "%10s %4s %13s %s\n" "----------" "----" "-------------" "------------------------------------"
+    for reg in "${regions[@]}"
+    do
+        local puuid=$(tr -d '\0' < /sys/devices/ndbus*/${reg}/of_node/ibm,unit-parent-guid)
+        local size=$(tr -d '\0' < /sys/devices/ndbus*/${reg}/size)
+        local numanode=$(tr -d '\0' < /sys/devices/ndbus*/${reg}/numa_node)
+        printf "%10s %4d %13d %s\n" $reg $numanode $size $puuid
+    done
 }
 
-function get_regions() {
+function get_regions_by_uuid() {
     local -r uuid=$1
     local -r ex_reg=$(lsprop /sys/devices/ndbus*/region*/of_node/ibm,unit-parent-guid  | grep -B 1 $uuid | grep -o 'region[0-9]\+')
+
+    if [[ -z "$ex_reg" ]]; then
+        logError "No regions found for $uuid"
+        exit 2
+    fi
     readarray -t regions <<<"$ex_reg"
     log "PMEM regions found: ${regions[@]}"
 }
@@ -147,7 +165,7 @@ function validate_vpmem_fs() {
         if [[ ${DISTRO,,} == "red"* ]]; then
             REFLINK="-m reflink=0"
         fi
-        runCommandExitOnError mkfs.xfs -f -b size=64K -s size=512 $REFLINK /dev/pmem$rno
+        runCommandExitOnError mkfs.xfs -q -f -b size=64K -s size=512 $REFLINK /dev/pmem$rno
     else
         log "Valid filesystem found on /dev/pmem$rno"
     fi
@@ -201,36 +219,73 @@ function mount_vpmem_fs() {
     vpmem_fs_list+=$mntpoint
 }
 
+function create_hana_cfg() {
+    local -r cfgfile=$1
+    local -r exit_on_fail=$2
+    if [[ ! -f $cfgfile ]]; then
+        if [[ $ACTIVATE_USAGE == true ]]; then
+            touch $cfgfile > /dev/null 2>&1                
+            if [[ $? != 0 ]]; then
+                logError "HANA Host configuration file $cfgfile cannot be created"
+                exit 1;
+            fi
+            chown --reference=$(dirname $cfgfile) $cfgfile > /dev/null 2>&1                
+        else
+            if [[ $exit_on_fail == true ]]; then
+                logError "HANA Host configuration file $cfgfile does not exist"
+                exit 1;
+            fi
+        fi
+    fi
+}
+
 function update_hana_cfg() {
     log "vPMEM filesystems: $vpmem_fs_list"
     local -r sid=${1^^}
     local -r instno=$2
     local -r insthost=$3
-    local -r config_file="/usr/sap/$sid/HDB${instno}/${insthost}/global.ini"
-    local -r param="basepath_persistent_memory_volumes"
-    if [[ ! -f $config_file ]]; then
-        logError "HANA Host configuration file $config_file does not exist"
-        exit 1;
+
+    local -r host_global_ini_file="/usr/sap/$sid/HDB${instno}/${insthost}/global.ini"
+    create_hana_cfg $host_global_ini_file true
+
+    local -r host_indexserver_ini_file="/usr/sap/$sid/HDB${instno}/${insthost}/indexserver.ini"
+    create_hana_cfg $host_indexserver_ini_file false
+
+    local -r basepath_param="basepath_persistent_memory_volumes"
+    grep $basepath_param $host_global_ini_file > /dev/null 2>&1 
+    if [[ $? != 0 ]]; then
+        if [[ $ACTIVATE_USAGE == true ]]; then
+            echo "[persistence]" >> $host_global_ini_file
+            echo "basepath_persistent_memory_volumes=XXX" >> $host_global_ini_file
+        else
+            logError "$host_global_ini_file does not contain a 'basepath_persistent_memory_volumes' property."
+            exit 1;
+        fi
     fi
-    grep $param $config_file > /dev/null 2>&1 
-    local -r rc=$?
-    if [[ $rc != 0 ]]; then
-        logError "$config_file does not contain a 'basepath_persistent_memory_volumes' property."
-        exit 1;
-    else
-        runCommandExitOnError 'sed -i "s#^${param}.*\$#${param}=${vpmem_fs_list}#g" $config_file'
-        log "HANA HOST configuration file $config_file updated"
+    runCommandExitOnError 'sed -i "s#^${basepath_param}.*\$#${basepath_param}=${vpmem_fs_list}#g" $host_global_ini_file'
+    log "HANA HOST configuration file $host_global_ini_file updated: parameter $basepath_param"
+
+    if [[ $ACTIVATE_USAGE == true ]]; then
+        local -r table_param="table_default"
+        grep $table_param $host_indexserver_ini_file > /dev/null 2>&1 
+        if [[ $? != 0 ]]; then
+            echo "[persistent_memory]" >> $host_indexserver_ini_file
+            echo "table_default=XXX" >> $host_indexserver_ini_file
+        fi
+        runCommandExitOnError 'sed -i "s#^${table_param}.*\$#${table_param}=on#g" $host_indexserver_ini_file'
+        log "HANA HOST configuration file $host_indexserver_ini_file updated: parameter $table_param"
     fi
 }
 
 # Main #################################################
 NAME=$(basename $0)
-VERSION="1.4"
+VERSION="1.6"
 DISTRO=$(grep PRETTY_NAME /etc/os-release | sed 's/PRETTY_NAME=//g' | tr -d '="')
 
 # Defaults
 declare LOGFILE="/tmp/${NAME}.log"
 declare CONFIG_VPMEM=""
+declare ACTIVATE_USAGE=false
 declare REBUILD_FS=false
 declare FS_SIMPLE_NUMBERING=false
 declare mntindex=0
@@ -239,7 +294,7 @@ declare -a regions
 declare -a nid_list='()'
 declare vpmem_fs_list=""
 
-while getopts ":hc:l:prnv" opt; do
+while getopts ":hac:l:prnv" opt; do
     case $opt in
         c) 
           CONFIG_VPMEM=$OPTARG
@@ -247,17 +302,20 @@ while getopts ":hc:l:prnv" opt; do
         l) 
           LOGFILE=$OPTARG
           ;;
+        a) 
+          ACTIVATE_USAGE=true
+          ;;
         r) 
           REBUILD_FS=true
           ;;
         n) 
           FS_SIMPLE_NUMBERING=true
           ;;
-        p) list_puuids ; exit 0;;
-        v) echo "$NAME: version $VERSION" ; exit 0;;
-        h) usage "Help" ; exit 0;;
-        :) usage "Option -${OPTARG} requires an argument." ; exit 1 ;;
-        \?) usage "Invalid option -${OPTARG}" ; exit 1;;
+        p) list_puuids; exit 0;;
+        v) echo "$NAME: version $VERSION"; exit 0;;
+        h) usage "Help"; exit 0;;
+        :) usage "Option -${OPTARG} requires an argument."; exit 1;;
+        \?) usage "Invalid option -${OPTARG}"; exit 1;;
     esac
 done
 shift $((OPTIND-1))
@@ -265,39 +323,89 @@ shift $((OPTIND-1))
 exec &> >(tee -a "$LOGFILE")
 exec 2>&1
 
+if [[ -z "$CONFIG_VPMEM" ]]; then
+    usage "Option c or p required" ; exit 1;
+fi
+
 log "= Start =========================================="
+log "version: $VERSION"
 verifyPermissions 
 verifyDependencies "ndctl" "jq"
 verifyJSON $CONFIG_VPMEM
 
 jq -rc '.[]' $CONFIG_VPMEM | while IFS='' read instance
 do
-    sid=$(echo $instance | jq .sid | tr -d '"' )
-    instno=$(echo $instance | jq .nr | tr -d '"' )
-    insthost=$(echo $instance | jq .host | tr -d '"' )
-    mnt=$(echo $instance | jq .mnt | tr -d '"')
-    puuid=$(echo $instance | jq .puuid | tr -d '"')
+    if echo $instance | jq -e 'has("sid")' > /dev/null; then
+        sid=$(echo $instance | jq .sid | tr -d '"' )
+        log "Parameter: sid=$sid"
+    else
+        logError "SID not specified in script configuration file. Keyword: 'sid'"
+        exit 1;
+    fi
 
-    if [[ $insthost == null ]]
-    then
+    if echo $instance | jq -e 'has("nr")' > /dev/null; then
+        instno=$(echo $instance | jq .nr | tr -d '"' )
+        log "Parameter: instno=$instno"
+    else
+        logError "Instance number not specified in script configuration file. Keyword: 'nr'"
+        exit 1;
+    fi
+
+    if echo $instance | jq -e 'has("mnt")' > /dev/null; then
+        mnt=$(echo $instance | jq .mnt | tr -d '"' )
+        log "Parameter: mnt=$mnt"
+    else
+        logError "vPMEM volume filesystem mountpoint not specified in script configuration file.  Keyword: 'mnt'"
+        exit 1;
+    fi
+
+    if echo $instance | jq -e 'has("puuid")' > /dev/null; then
+        declare -a puuid
+        puuid=( $(echo $instance | jq '[.puuid] | flatten | values[]' | tr -d '"' ) )
+        for uuid in "${puuid[@]}"
+        do
+            if [[ ${#uuid} -ne 36 ]]; then
+                logError "Invalid UUID specified: $uuid"
+                exit 1;
+            fi
+	    if [[ ! $uuid =~ ^\{?[A-F0-9a-f]{8}-[A-F0-9a-f]{4}-[A-F0-9a-f]{4}-[A-F0-9a-f]{4}-[A-F0-9a-f]{12}\}?$ ]]; then
+                logError "Invalid UUID specified: $uuid"
+                exit 1;
+            fi
+	done
+        log "Parameter: puuid=${puuid[@]}"
+    else
+        logError "Parrent UUID not specified in script configuration file.  Keyword: 'puuid'"
+        exit 1;
+    fi
+
+    if echo $instance | jq -e 'has("hostname")' > /dev/null; then
+        hostname=$(echo $instance | jq .hostname | tr -d '"' )
+    else
         if [[ ! -z "$HOSTNAME" ]]
         then
             insthost=$HOSTNAME
         else
-            logError "hostname not specified in script configuration file."
+            logError "Hostname not specified in script configuration file. Keyword: 'hostname'"
             exit 1;
         fi
     fi
-
-    get_regions $puuid
-    for element in "${regions[@]}"
-    do
-        validate_namespace $element
-        unmount_vpmem_fs $element
-        validate_vpmem_fs $element
-        mount_vpmem_fs $element $mnt $sid 
+    log "Parameter: host=$insthost"
+ 
+    for uuid in "${puuid[@]}"
+    do            
+        log "UUID $uuid"    
+        get_regions_by_uuid $uuid
+        for element in "${regions[@]}"
+        do
+            validate_namespace $element
+            unmount_vpmem_fs $element
+            validate_vpmem_fs $element
+            mount_vpmem_fs $element $mnt/$sid $sid 
+        done
     done
     update_hana_cfg $sid $instno $insthost
+    unset vpmem_fs_list
     unset regions
 done
 
