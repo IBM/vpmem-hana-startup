@@ -33,6 +33,12 @@
 #        ,"puuid": "<parent vpmem volume uuid>"
 #        ,"mnt"  : "<filesystem path to mount vpmem filesystems under>"
 #      }
+#      {
+#        "sid"   : "<HANA instance name>"
+#        ,"nr"   : "<HANA instance number>"
+#        ,"host" : "<HANA host>"
+#        ,"mnt"  : "<filesystem path to mount tmpfs filesystems under>"
+#      }
 #    ]
 # 3. Create /etc/systemd/system/vpmem_hana.service taking care of NOTEs below
 #    [Unit]
@@ -73,6 +79,12 @@ EOUSAGE
 
 function log() {
     echo "$(date +%Y%m%d-%H%M%S) [$NAME:$$] $@"
+}
+
+function logVerbose() {
+#    if [[ $VERBOSE == true ]]; then
+        log "$@"
+#    fi
 }
 
 function logError() {
@@ -119,6 +131,8 @@ function get_cfg_info() {
 
     if echo $instance | jq -e 'has("sid")' > /dev/null; then
         sid=$(echo $instance | jq .sid | tr -d '"' )
+        sidlc=${sid,,}
+        siduc=${sid^^}
         log "Parameter: sid=$sid"
     else
         logError "SID not specified in script configuration file. Keyword: 'sid'"
@@ -156,9 +170,9 @@ function get_cfg_info() {
             fi
 	done
         log "Parameter: puuid=${puuid[@]}"
+        pmem_type="vpmem"
     else
-        logError "Parent UUID not specified in script configuration file.  Keyword: 'puuid'"
-        exit 1;
+        pmem_type="tmpfs"
     fi
 
     if echo $instance | jq -e 'has("hostname")' > /dev/null; then
@@ -173,6 +187,7 @@ function get_cfg_info() {
         fi
     fi
     log "Parameter: host=$insthost"
+    log "Parameter: type=$pmem_type"
 }
 
 function list_vpmem_summary() {
@@ -212,6 +227,116 @@ function list_puuids() {
         local size=$(tr -d '\0' < /sys/devices/ndbus*/${reg}/size)
         local numanode=$(tr -d '\0' < /sys/devices/ndbus*/${reg}/numa_node)
         printf "%10s %4d %13d %s\n" $reg $numanode $size $puuid
+    done
+}
+
+function get_tmpfs_mnts() {
+    local sid=$1
+    local mntparent=$2
+    local node=-2
+
+    log "Name         Mountpoint                                       Type     Options                          Node"
+    log "------------ ------------------------------------------------ -------- -------------------------------- ----"
+#    log mntparent=$mntparent
+#    log "exec: grep $mntparent /proc/mounts | grep tmpfs | grep -i $sid "
+    grep $mntparent /proc/mounts | grep tmpfs | grep -i $sid | while IFS=' ' read -r mntname mntpoint mnttype mntopts rest
+    do
+        node=-1
+        if [[ $mntopts == *"prefer"* ]]; then
+            node=${mntopts##*prefer:}
+            node=${node%%,*}
+        fi
+
+        printf -v pad %32s
+	local tmntname=$mntname$pad
+	local tmntpoint=$mntpoint$pad
+	local tmnttype=$mnttype$pad
+	local tmntopts=$mntopts$pad
+	local tnode=$node$pad
+
+        log "${tmntname:0:12} ${tmntpoint:0:48} ${tmnttype:0:8} ${tmntopts:0:32} ${tnode:0:4}"
+
+        [[ ! -z "$vpmem_fs_list" ]] && vpmem_fs_list+=";"
+        vpmem_fs_list+=$mntpoint
+        [[ ! -z "$vpmem_nn_list" ]] && vpmem_nn_list+=";"
+        vpmem_nn_list+=$node
+    done
+}
+
+function get_numa_nodes() {
+#    log "LPAR Topology ->  Node Memory"
+#    log "                  ---- ------"
+    local nodepath
+    local node
+    for nodepath in /sys/devices/system/node/node*
+    do
+        node=${nodepath##*\/node}
+#        printf -v tnode "%3d" $node
+	if compgen -G "${nodepath}/memory*" > /dev/null; then
+            numa_nodes+=($node)
+#            log "                  $tnode    Y"
+#        else
+#            log "                  $tnode    N"
+        fi
+    done
+    log "Numa nodes: ${numa_nodes[@]}"
+}
+
+function remove_tmpfs_all_mnts() {
+    IFS=';' read -r -a vpmem_fs_array <<< "$1"
+    local mnt
+    for mnt in "${vpmem_fs_array[@]}"
+    do
+        while umount -f $mnt 2>/dev/null; do :; done
+    done
+}
+
+function get_tmpfs_mounts_to_create() {
+    local node
+    for node in "${numa_nodes[@]}"
+    do
+        if [[ ! " ${tmpfs_nodes[@]} " =~ " ${node} " ]]; then
+            tmpfs_create+=($node)
+        fi
+    done
+}
+
+function create_tmpfs_mounts() {
+
+## TODO:
+##   handle mnt name conflict
+##
+    local -r sidlc=${1,,}
+    local -r siduc=${1^^}
+    local -r mntparent=$2
+    local node
+
+    for node in "${numa_nodes[@]}"
+    do
+
+        local fs="$mntparent/$siduc/node$node"
+
+        local cmd="mkdir -p $fs"
+        logVerbose "Execute: $cmd"
+        runCommandExitOnError $cmd
+
+        cmd="mount tmpfs${siduc}${node} -t tmpfs -o mpol=prefer:${node} $fs"
+        logVerbose "Execute: $cmd"
+        runCommandExitOnError $cmd
+
+        cmd="chown -R ${sidlc}adm:sapsys $fs"
+        logVerbose "Execute: $cmd"
+        runCommandExitOnError $cmd
+
+        cmd="chmod 777 -R $fs"
+        logVerbose "Execute: $cmd"
+        runCommandExitOnError $cmd
+
+        [[ ! -z "$vpmem_fs_list" ]] && vpmem_fs_list+=";"
+        vpmem_fs_list+=$fs
+        [[ ! -z "$vpmem_nn_list" ]] && vpmem_nn_list+=";"
+        vpmem_nn_list+=$node
+
     done
 }
 
@@ -370,6 +495,8 @@ NAME=$(basename $0)
 VERSION="1.7"
 DISTRO=$(grep PRETTY_NAME /etc/os-release | sed 's/PRETTY_NAME=//g' | tr -d '="')
 
+shopt -s lastpipe
+
 # Defaults
 declare LOGFILE="/tmp/${NAME}.log"
 declare CONFIG_VPMEM=""
@@ -380,8 +507,10 @@ declare mntindex=0
 
 declare -a regions
 declare -a nid_list='()'
+declare -a numa_nodes
 declare vpmem_fs_list=""
 declare vpmem_nn_list=""
+declare pmem_type=""
 
 while getopts ":hac:l:prnv" opt; do
     case $opt in
@@ -422,23 +551,38 @@ verifyPermissions
 verifyDependencies "ndctl" "jq"
 verifyJSON $CONFIG_VPMEM
 
+get_numa_nodes
+
 jq -rc '.[]' $CONFIG_VPMEM | while IFS='' read instance
 do
     get_cfg_info $instance
-    for uuid in "${puuid[@]}"
-    do            
-        log "UUID $uuid"    
-        get_regions_by_uuid $uuid
-        for element in "${regions[@]}"
-        do
-            validate_namespace $element
-            unmount_vpmem_fs $element
-            validate_vpmem_fs $element
-            mount_vpmem_fs $element $mnt/$sid $sid 
+
+    if [[ $pmem_type == "vpmem" ]]; then
+        for uuid in "${puuid[@]}"
+        do            
+            log "UUID $uuid"    
+            get_regions_by_uuid $uuid
+            for element in "${regions[@]}"
+            do
+                validate_namespace $element
+                unmount_vpmem_fs $element
+                validate_vpmem_fs $element
+                mount_vpmem_fs $element $mnt/$siduc $sid 
+            done
         done
-    done
+    else
+        get_tmpfs_mnts $sid $mnt/$siduc
+        list_vpmem_summary $sid $vpmem_nn_list $vpmem_fs_list
+        if [[ $REBUILD_FS == true ]]; then
+            remove_tmpfs_all_mnts $vpmem_fs_list
+            unset vpmem_fs_list
+            unset vpmem_nn_list
+            create_tmpfs_mounts $siduc $mnt
+        fi
+    fi
     update_hana_cfg $sid $instno $insthost
     list_vpmem_summary $sid $vpmem_nn_list $vpmem_fs_list
+    unset pmem_type
     unset vpmem_fs_list
     unset vpmem_nn_list
     unset regions
