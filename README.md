@@ -88,11 +88,11 @@ The -p option can be used to list discovered vpmem regions, their sizes, numa no
 ```
     [
       {
-        "sid"   : "<HANA instance name. Required.>"
-        ,"nr"   : "<HANA instance number. Required.>"
-        ,"host" : "<HANA host. If not specified, the environment variable HOSTNAME will be used.>"
-        ,"puuid": "<parent vpmem volume uuid. Required.>"
-        ,"mnt"  : "<filesystem path to mount vpmem filesystems under. Required.>"
+        "sid"       : "<HANA instance name. Required.>"
+        ,"nr"       : "<HANA instance number. Required.>"
+        ,"hostname" : "<HANA host. If not specified, the environment variable HOSTNAME will be used.>"
+        ,"puuid    ": "<parent vpmem volume uuid. Required.>"
+        ,"mnt"      : "<filesystem path to mount vpmem filesystems under. Required.>"
       }
     ]
 ```
