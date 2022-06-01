@@ -27,17 +27,17 @@
 # 2. Create /mountpoint/path/to/vpmem_hana.cfg
 #    [
 #      {
-#        "sid"   : "<HANA instance name>"
-#        ,"nr"   : "<HANA instance number>"
-#        ,"host" : "<HANA host>"
-#        ,"puuid": "<parent vpmem volume uuid>"
-#        ,"mnt"  : "<filesystem path to mount vpmem filesystems under>"
+#        "sid"       : "<HANA instance name>"
+#        ,"nr"       : "<HANA instance number>"
+#        ,"hostname" : "<HANA host>"
+#        ,"puuid"    : "<parent vpmem volume uuid>"
+#        ,"mnt"      : "<filesystem path to mount vpmem filesystems under>"
 #      }
 #      {
-#        "sid"   : "<HANA instance name>"
-#        ,"nr"   : "<HANA instance number>"
-#        ,"host" : "<HANA host>"
-#        ,"mnt"  : "<filesystem path to mount tmpfs filesystems under>"
+#        "sid"       : "<HANA instance name>"
+#        ,"nr"       : "<HANA instance number>"
+#        ,"hostname" : "<HANA host>"
+#        ,"mnt"      : "<filesystem path to mount tmpfs filesystems under>"
 #      }
 #    ]
 # 3. Create /etc/systemd/system/vpmem_hana.service taking care of NOTEs below
@@ -176,7 +176,7 @@ function get_cfg_info() {
     fi
 
     if echo $instance | jq -e 'has("hostname")' > /dev/null; then
-        hostname=$(echo $instance | jq .hostname | tr -d '"' )
+        insthost=$(echo $instance | jq .hostname | tr -d '"' )
     else
         if [[ ! -z "$HOSTNAME" ]]
         then
