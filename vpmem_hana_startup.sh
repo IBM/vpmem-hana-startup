@@ -30,8 +30,15 @@
 #        "sid"       : "<HANA instance name>"
 #        ,"nr"       : "<HANA instance number>"
 #        ,"hostname" : "<HANA host>"
-#        ,"puuid    ": "<parent vpmem volume uuid>"
+#        ,"puuid"    : "<parent vpmem volume uuid>"
 #        ,"mnt"      : "<filesystem path to mount vpmem filesystems under>"
+#      }
+#      {
+#        "sid"       : "<HANA instance name>"
+#        ,"nr"       : "<HANA instance number>"
+#        ,"hostname" : "<HANA host>"
+#        ,"mnt"      : "<filesystem path to mount tmpfs filesystems under>"
+
 #      }
 #    ]
 # 3. Create /etc/systemd/system/vpmem_hana.service taking care of NOTEs below
@@ -75,6 +82,12 @@ function log() {
     echo "$(date +%Y%m%d-%H%M%S) [$NAME:$$] $@"
 }
 
+function logVerbose() {
+#    if [[ $VERBOSE == true ]]; then
+        log "$@"
+#    fi
+}
+
 function logError() {
     log "ERROR: $@"
 }
@@ -114,6 +127,95 @@ function runCommandExitOnError() {
 }
 
 # Funcs ################################################
+function get_cfg_info() {
+    local -r instance=$1
+
+    if echo $instance | jq -e 'has("sid")' > /dev/null; then
+        sid=$(echo $instance | jq .sid | tr -d '"' )
+        sidlc=${sid,,}
+        siduc=${sid^^}
+        log "Parameter: sid=$sid"
+    else
+        logError "SID not specified in script configuration file. Keyword: 'sid'"
+        exit 1;
+    fi
+
+    if echo $instance | jq -e 'has("nr")' > /dev/null; then
+        instno=$(echo $instance | jq .nr | tr -d '"' )
+        log "Parameter: instno=$instno"
+    else
+        logError "Instance number not specified in script configuration file. Keyword: 'nr'"
+        exit 1;
+    fi
+
+    if echo $instance | jq -e 'has("mnt")' > /dev/null; then
+        mnt=$(echo $instance | jq .mnt | tr -d '"' )
+        log "Parameter: mnt=$mnt"
+    else
+        logError "vPMEM volume filesystem mountpoint not specified in script configuration file.  Keyword: 'mnt'"
+        exit 1;
+    fi
+
+    if echo $instance | jq -e 'has("puuid")' > /dev/null; then
+        declare -ga puuid
+        puuid=( $(echo $instance | jq '[.puuid] | flatten | values[]' | tr -d '"' ) )
+        for uuid in "${puuid[@]}"
+        do
+            if [[ ${#uuid} -ne 36 ]]; then
+                logError "Invalid UUID specified: $uuid"
+                exit 1;
+            fi
+	    if [[ ! $uuid =~ ^\{?[A-F0-9a-f]{8}-[A-F0-9a-f]{4}-[A-F0-9a-f]{4}-[A-F0-9a-f]{4}-[A-F0-9a-f]{12}\}?$ ]]; then
+                logError "Invalid UUID specified: $uuid"
+                exit 1;
+            fi
+	done
+        log "Parameter: puuid=${puuid[@]}"
+        pmem_type="vpmem"
+    else
+        pmem_type="tmpfs"
+    fi
+
+    if echo $instance | jq -e 'has("hostname")' > /dev/null; then
+        insthost=$(echo $instance | jq .hostname | tr -d '"' )
+    else
+        if [[ ! -z "$HOSTNAME" ]]
+        then
+            insthost=$HOSTNAME
+        else
+            logError "Hostname not specified in script configuration file. Keyword: 'hostname'"
+            exit 1;
+        fi
+    fi
+    log "Parameter: host=$insthost"
+    log "Parameter: type=$pmem_type"
+}
+
+function list_vpmem_summary() {
+    local sid=$1
+    IFS=';' read -r -a vpmem_nn_array <<< "$2"
+    IFS=';' read -r -a vpmem_fs_array <<< "$3"
+
+    printf "\nInstance: %3s\n" $sid
+    printf "%4s %9s %9s %9s %13s %s\n" "Numa" "" "" "Percent " ""
+    printf "%4s %9s %9s %9s %13s %s\n" "Node" "Available" "Used  " "Used  " "Mountpoint"
+    printf "%4s %9s %9s %9s %13s %s\n" "----" "---------" "---------" "---------" "------------------------------------"
+    if [[ ${#vpmem_nn_array[@]} -ne ${#vpmem_fs_array[@]} ]]; then
+        logError "Error: numa node and file system list are of unequal length. Dubious results.";
+    else
+        for index in "${!vpmem_nn_array[@]}"
+        do
+            local nn=${vpmem_nn_array[$index]}
+            local fs=${vpmem_fs_array[$index]}
+            readarray -t -s1 dfout <<< $(df -h --output=avail,used,pcent $fs)
+            local avail=${dfout[0]}
+            local used=${dfout[1]}
+            local pcent=${dfout[2]}
+            printf "%4d %9s %9s %9s %s\n" $nn $avail $used $pcent $fs
+        done
+    fi
+}
+
 function list_puuids() {
     local -r ex_reg=$(lsprop /sys/devices/ndbus*/region*/of_node/ibm,unit-parent-guid | grep -o 'region[0-9]\+')
     readarray -t regions <<<"$ex_reg"
@@ -126,6 +228,116 @@ function list_puuids() {
         local size=$(tr -d '\0' < /sys/devices/ndbus*/${reg}/size)
         local numanode=$(tr -d '\0' < /sys/devices/ndbus*/${reg}/numa_node)
         printf "%10s %4d %13d %s\n" $reg $numanode $size $puuid
+    done
+}
+
+function get_tmpfs_mnts() {
+    local sid=$1
+    local mntparent=$2
+    local node=-2
+
+    log "Name         Mountpoint                                       Type     Options                          Node"
+    log "------------ ------------------------------------------------ -------- -------------------------------- ----"
+#    log mntparent=$mntparent
+#    log "exec: grep $mntparent /proc/mounts | grep tmpfs | grep -i $sid "
+    grep $mntparent /proc/mounts | grep tmpfs | grep -i $sid | while IFS=' ' read -r mntname mntpoint mnttype mntopts rest
+    do
+        node=-1
+        if [[ $mntopts == *"prefer"* ]]; then
+            node=${mntopts##*prefer:}
+            node=${node%%,*}
+        fi
+
+        printf -v pad %32s
+	local tmntname=$mntname$pad
+	local tmntpoint=$mntpoint$pad
+	local tmnttype=$mnttype$pad
+	local tmntopts=$mntopts$pad
+	local tnode=$node$pad
+
+        log "${tmntname:0:12} ${tmntpoint:0:48} ${tmnttype:0:8} ${tmntopts:0:32} ${tnode:0:4}"
+
+        [[ ! -z "$vpmem_fs_list" ]] && vpmem_fs_list+=";"
+        vpmem_fs_list+=$mntpoint
+        [[ ! -z "$vpmem_nn_list" ]] && vpmem_nn_list+=";"
+        vpmem_nn_list+=$node
+    done
+}
+
+function get_numa_nodes() {
+#    log "LPAR Topology ->  Node Memory"
+#    log "                  ---- ------"
+    local nodepath
+    local node
+    for nodepath in /sys/devices/system/node/node*
+    do
+        node=${nodepath##*\/node}
+#        printf -v tnode "%3d" $node
+	if compgen -G "${nodepath}/memory*" > /dev/null; then
+            numa_nodes+=($node)
+#            log "                  $tnode    Y"
+#        else
+#            log "                  $tnode    N"
+        fi
+    done
+    log "Numa nodes: ${numa_nodes[@]}"
+}
+
+function remove_tmpfs_all_mnts() {
+    IFS=';' read -r -a vpmem_fs_array <<< "$1"
+    local mnt
+    for mnt in "${vpmem_fs_array[@]}"
+    do
+        while umount -f $mnt 2>/dev/null; do :; done
+    done
+}
+
+function get_tmpfs_mounts_to_create() {
+    local node
+    for node in "${numa_nodes[@]}"
+    do
+        if [[ ! " ${tmpfs_nodes[@]} " =~ " ${node} " ]]; then
+            tmpfs_create+=($node)
+        fi
+    done
+}
+
+function create_tmpfs_mounts() {
+
+## TODO:
+##   handle mnt name conflict
+##
+    local -r sidlc=${1,,}
+    local -r siduc=${1^^}
+    local -r mntparent=$2
+    local node
+
+    for node in "${numa_nodes[@]}"
+    do
+
+        local fs="$mntparent/$siduc/node$node"
+
+        local cmd="mkdir -p $fs"
+        logVerbose "Execute: $cmd"
+        runCommandExitOnError $cmd
+
+        cmd="mount tmpfs${siduc}${node} -t tmpfs -o mpol=prefer:${node} $fs"
+        logVerbose "Execute: $cmd"
+        runCommandExitOnError $cmd
+
+        cmd="chown -R ${sidlc}adm:sapsys $fs"
+        logVerbose "Execute: $cmd"
+        runCommandExitOnError $cmd
+
+        cmd="chmod 777 -R $fs"
+        logVerbose "Execute: $cmd"
+        runCommandExitOnError $cmd
+
+        [[ ! -z "$vpmem_fs_list" ]] && vpmem_fs_list+=";"
+        vpmem_fs_list+=$fs
+        [[ ! -z "$vpmem_nn_list" ]] && vpmem_nn_list+=";"
+        vpmem_nn_list+=$node
+
     done
 }
 
@@ -186,11 +398,11 @@ function mount_vpmem_fs() {
     local -r user=${3,,}adm
     local mntpoint
 
+    local -r numa_node=$(cat /sys/devices/ndbus$rno/region$rno/numa_node)
     if [[ $FS_SIMPLE_NUMBERING == true ]]; then
         mntpoint=${basemnt}/vol${mntindex}
         ((mntindex++))
     else
-        local -r numa_node=$(cat /sys/devices/ndbus$rno/region$rno/numa_node)
         mntpoint=${basemnt}/node${numa_node}
         /usr/bin/mountpoint -q $mntpoint
         if [[ $? == 0 ]]; then
@@ -217,6 +429,8 @@ function mount_vpmem_fs() {
     runCommandExitOnError /usr/bin/chmod 700 $mntpoint
     [[ ! -z "$vpmem_fs_list" ]] && vpmem_fs_list+=";"
     vpmem_fs_list+=$mntpoint
+    [[ ! -z "$vpmem_nn_list" ]] && vpmem_nn_list+=";"
+    vpmem_nn_list+=$numa_node
 }
 
 function create_hana_cfg() {
@@ -279,8 +493,10 @@ function update_hana_cfg() {
 
 # Main #################################################
 NAME=$(basename $0)
-VERSION="1.6.1"
+VERSION="1.7"
 DISTRO=$(grep PRETTY_NAME /etc/os-release | sed 's/PRETTY_NAME=//g' | tr -d '="')
+
+shopt -s lastpipe
 
 # Defaults
 declare LOGFILE="/tmp/${NAME}.log"
@@ -292,7 +508,10 @@ declare mntindex=0
 
 declare -a regions
 declare -a nid_list='()'
+declare -a numa_nodes
 declare vpmem_fs_list=""
+declare vpmem_nn_list=""
+declare pmem_type=""
 
 while getopts ":hac:l:prnv" opt; do
     case $opt in
@@ -333,79 +552,40 @@ verifyPermissions
 verifyDependencies "ndctl" "jq"
 verifyJSON $CONFIG_VPMEM
 
+get_numa_nodes
+
 jq -rc '.[]' $CONFIG_VPMEM | while IFS='' read instance
 do
-    if echo $instance | jq -e 'has("sid")' > /dev/null; then
-        sid=$(echo $instance | jq .sid | tr -d '"' )
-        log "Parameter: sid=$sid"
-    else
-        logError "SID not specified in script configuration file. Keyword: 'sid'"
-        exit 1;
-    fi
+    get_cfg_info $instance
 
-    if echo $instance | jq -e 'has("nr")' > /dev/null; then
-        instno=$(echo $instance | jq .nr | tr -d '"' )
-        log "Parameter: instno=$instno"
-    else
-        logError "Instance number not specified in script configuration file. Keyword: 'nr'"
-        exit 1;
-    fi
-
-    if echo $instance | jq -e 'has("mnt")' > /dev/null; then
-        mnt=$(echo $instance | jq .mnt | tr -d '"' )
-        log "Parameter: mnt=$mnt"
-    else
-        logError "vPMEM volume filesystem mountpoint not specified in script configuration file.  Keyword: 'mnt'"
-        exit 1;
-    fi
-
-    if echo $instance | jq -e 'has("puuid")' > /dev/null; then
-        declare -a puuid
-        puuid=( $(echo $instance | jq '[.puuid] | flatten | values[]' | tr -d '"' ) )
+    if [[ $pmem_type == "vpmem" ]]; then
         for uuid in "${puuid[@]}"
-        do
-            if [[ ${#uuid} -ne 36 ]]; then
-                logError "Invalid UUID specified: $uuid"
-                exit 1;
-            fi
-	    if [[ ! $uuid =~ ^\{?[A-F0-9a-f]{8}-[A-F0-9a-f]{4}-[A-F0-9a-f]{4}-[A-F0-9a-f]{4}-[A-F0-9a-f]{12}\}?$ ]]; then
-                logError "Invalid UUID specified: $uuid"
-                exit 1;
-            fi
-	done
-        log "Parameter: puuid=${puuid[@]}"
+        do            
+            log "UUID $uuid"    
+            get_regions_by_uuid $uuid
+            for element in "${regions[@]}"
+            do
+                validate_namespace $element
+                unmount_vpmem_fs $element
+                validate_vpmem_fs $element
+                mount_vpmem_fs $element $mnt/$siduc $sid 
+            done
+        done
     else
-        logError "Parrent UUID not specified in script configuration file.  Keyword: 'puuid'"
-        exit 1;
-    fi
-
-    if echo $instance | jq -e 'has("hostname")' > /dev/null; then
-        insthost=$(echo $instance | jq .hostname | tr -d '"' )
-    else
-        if [[ ! -z "$HOSTNAME" ]]
-        then
-            insthost=$HOSTNAME
-        else
-            logError "Hostname not specified in script configuration file. Keyword: 'hostname'"
-            exit 1;
+        get_tmpfs_mnts $sid $mnt/$siduc
+        list_vpmem_summary $sid $vpmem_nn_list $vpmem_fs_list
+        if [[ $REBUILD_FS == true ]]; then
+            remove_tmpfs_all_mnts $vpmem_fs_list
+            unset vpmem_fs_list
+            unset vpmem_nn_list
+            create_tmpfs_mounts $siduc $mnt
         fi
     fi
-    log "Parameter: host=$insthost"
- 
-    for uuid in "${puuid[@]}"
-    do            
-        log "UUID $uuid"    
-        get_regions_by_uuid $uuid
-        for element in "${regions[@]}"
-        do
-            validate_namespace $element
-            unmount_vpmem_fs $element
-            validate_vpmem_fs $element
-            mount_vpmem_fs $element $mnt/$sid $sid 
-        done
-    done
     update_hana_cfg $sid $instno $insthost
+    list_vpmem_summary $sid $vpmem_nn_list $vpmem_fs_list
+    unset pmem_type
     unset vpmem_fs_list
+    unset vpmem_nn_list
     unset regions
 done
 
