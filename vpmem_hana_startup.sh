@@ -38,6 +38,7 @@
 #        ,"nr"       : "<HANA instance number>"
 #        ,"hostname" : "<HANA host>"
 #        ,"mnt"      : "<filesystem path to mount tmpfs filesystems under>"
+
 #      }
 #    ]
 # 3. Create /etc/systemd/system/vpmem_hana.service taking care of NOTEs below
