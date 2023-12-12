@@ -7,7 +7,7 @@ After=remote-fs.target
 [Service]
 Type=oneshot
 # NOTE: Adjust the path to the startup script.
-ExecStart=/bin/sh -c "/usr/sap/vpmem/vpmem_hana_startup.sh -c /usr/sap/vpmem/vpmem_hana.cfg -l /usr/sap/vpmem/vpmem_hana_startup.log"
+ExecStart=/bin/sh -c "/usr/sap/vpmem/vpmem_hana_startup.py -c /usr/sap/vpmem/vpmem_hana.cfg -t /usr/sap/vpmem/vpmem_topology.sav -l /usr/sap/vpmem/vpmem_hana_startup.log -a"
 
 [Install]
 WantedBy=multi-user.target
