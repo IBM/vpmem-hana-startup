@@ -99,6 +99,11 @@ The -g option in conjunction with the -t option can be used to store the vPMEM t
 0 1 2 3
 [root@myHost: ~]#
 ```
+Everytime the script is starting it writes to a log file, which is located under /tmp/vpmem_hana_startup.<hostname>.log in case the -l option is not used.
+```
+[root@myHost: ~]# ls -alh /tmp/vpmem_hana_startup.myHost.log
+-rw-r--r-- 1 root root 7.7M Dec 11 14:29 /tmp/vpmem_hana_startup.myHost.log
+```
 
 ## User Configuration Flow:
 - On the HMC, create a vPMEM volume for the HANA partition. Mark the vPMEM volume as optimized for affinity.
