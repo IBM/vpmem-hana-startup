@@ -107,7 +107,7 @@ USAGE = '''Usage: %s [-c <file>] [-t <file>] [-l <file>] [-s <size>] [-r] [-a] [
  -h            Help.'''
 
 # Constants used by the script:
-VPMEM_SCRIPT_VERSION = "2.19"
+VPMEM_SCRIPT_VERSION = "2.20"
 PMEMSS_CMD_TIMEDOUT = "CMD_TIMEDOUT"
 VPMEM_MAX_RETRIES = 3
 
@@ -545,6 +545,40 @@ def getValueFromFileWithKeyAndDelimiter(filePath, delimiter, key):
     else:
         return (True, myDict[key])
 
+def checkAndRemoveDuplicates(listToCheck, cfgFileSection, cfgFilePath):
+    '''
+    Check the passed list for duplicated entries and remove them if any exists.
+    This can happen in case the specified section of the vPMEM configuration
+    file contains such multiple entries by mistake.
+    The returned list contains just unique entries used for further processing.
+    The specified vPMEM configuration file will not be changed automatically.
+    Instead a hint is printed to stdout containing the correct entries.
+    @param: listToCheck (list): List to check for duplicated entries.
+    @param: cfgFileSection (str): String which specifies the affected section in
+            the vPMEM startup script configuration file.
+    @param: cfgFilePath (str): Path to the vPMEM configuration file.
+    @return: listToReturn (list): List of unique entries.
+    '''
+    # If no duplicates exist just return the original list.
+    if (len(listToCheck) == len(set(listToCheck))):
+        return listToCheck
+
+    listToReturn = []
+    duplicates = []
+    for entry in listToCheck:
+        if entry in listToReturn:
+            duplicates.append(entry)
+        else:
+            listToReturn.append(entry)
+    if duplicates:
+        trace(TL.WARNING, "Found following duplicated entries in %s section "
+              "%s: '%s', ignoring those.", cfgFilePath, cfgFileSection,
+              ", ".join(duplicates))
+        trace(TL.WARNING, "%s section %s contains duplicated entries. "
+              "To erase duplicates, use: %s.", cfgFilePath, cfgFileSection,
+              json.dumps(listToReturn))
+    return listToReturn
+
 def verifyAndGetCfgInfo(cfgDict, cfgFilePath):
     '''
     Verify the configuration values from the passed-in dictionary. The following
@@ -562,25 +596,25 @@ def verifyAndGetCfgInfo(cfgDict, cfgFilePath):
     extracts it from the OS via a socket system call.
     @param: cfgDict (dict): Dictionary containing the configuration.
     @param: cfgFilePath (str): Path to the configuration file.
-    @return: Tuple of (bool, dict): False, if an error occurred. In this case
-             the returned dictionary cannot be used. True, if the verification
-             succeed and the dictionary with the configuration values consisting
-             of key-value tuples.
+    @return: boolean: False, if an error occurred. In this case the referenced
+             dictionary cannot be used. True, if the verification succeed and the
+             dictionary with the configuration values contains meaningful key-value
+             tuples.
     '''
     trace(TL.INFO, "Verifying configuration parameters in %s.", cfgFilePath)
 
     if "sid" not in cfgDict:
         trace(TL.ERROR, "SID not specified in configuration file. Keyword: "
               "'sid'")
-        return (False, cfgDict)
+        return False
     if "nr" not in cfgDict:
         trace(TL.ERROR, "Instance number not specified in configuration file. "
               "Keyword: 'nr'")
-        return (False, cfgDict)
+        return False
     if "mnt" not in cfgDict:
         trace(TL.ERROR, "Filesystem mountpoint not specified in configuration "
               "file. Keyword: 'mnt'")
-        return (False, cfgDict)
+        return False
 
     # Get the sid and convert it to upper and lower case for later use
     sid = cfgDict.get("sid")
@@ -593,15 +627,18 @@ def verifyAndGetCfgInfo(cfgDict, cfgFilePath):
         # processing.
         if isinstance(puuids, str):
             puuids = [puuids]
-            cfgDict["puuid"] = puuids
+        else:
+            # Check for duplicated UUIDs and remove them from the list.
+            puuids = checkAndRemoveDuplicates(puuids, "puuid", cfgFilePath)
+        cfgDict["puuid"] = puuids
         for puuid in puuids:
             if (len(puuid) != 36 or
                 not re.match(r"[A-F0-9a-f]{8}-[A-F0-9a-f]{4}-[A-F0-9a-f]{4}-" \
                               "[A-F0-9a-f]{4}-[A-F0-9a-f]{12}\}?$", puuid)):
                 trace(TL.ERROR, "Invalid UUID specified: '%s'.", puuid)
                 return (False, cfgDict)
-            trace(TL.INFO, "Valid UUID found: '%s'.", puuid)
-        trace(TL.INFO, "Config parameter (puuid): UUID=%s", puuids)
+            trace(TL.INFO, "UUID with valid format found: \"%s\".", puuid)
+        trace(TL.INFO, "Config parameter (puuid): UUID=%s", json.dumps(puuids))
         cfgDict['type'] = "vpmem"
     else:
         cfgDict['type'] = "tmpfs"
@@ -623,7 +660,7 @@ def verifyAndGetCfgInfo(cfgDict, cfgFilePath):
     trace(TL.INFO, "Config parameter (host OR hostname): Hostname=%s", cfgDict.get("hostname"))
     trace(TL.INFO, "Config parameter (type): File system type=%s", cfgDict.get("type"))
 
-    return (True, cfgDict)
+    return True
 
 def convertMemorySizeToKB(memSize):
     '''
@@ -1424,8 +1461,8 @@ def verifyAndSetupMountPoints(cfgFilePath, curNUMANodeIds, prevNUMANodeIds,
 
         # Sanity check of the configuration values. The check might modify the
         # passed configuration entries.
-        (valid, singleCfgEntry) = verifyAndGetCfgInfo(singleCfgEntry,
-                                                      cfgFilePath)
+        valid = verifyAndGetCfgInfo(singleCfgEntry, cfgFilePath)
+
         if not valid:
             trace(TL.ERROR, "Verification of configuration in %s failed.",
                   cfgFilePath)
